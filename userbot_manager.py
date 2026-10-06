@@ -393,6 +393,20 @@ async def broadcast_worker(user_id: int, bot_instance):
                     pass
                 break
             
+            # StringSession da barcha guruh va kanallar entity larini xotiraga yuklash (JUDA MUHIM!)
+            try:
+                await client.get_dialogs()
+            except Exception as dlg_ex:
+                logger.warning(f"Dialoglarni yuklashda ogohlantirish: {dlg_ex}")
+
+            # Saved Messages'dagi asl xabarni olish (matn, format va media bilan nusxa qilib yuborish uchun)
+            saved_msg = None
+            if fwd_msg_id:
+                try:
+                    saved_msg = await client.get_messages('me', ids=fwd_msg_id)
+                except Exception as ex_get:
+                    logger.warning(f"Saved Messages'dan postni olishda xatolik: {ex_get}")
+
             # Agar story_url bo'lsa, input_story ni oldindan tayyorlaymiz
             prepared_story_file = None
             if b_type == "story" and story_url:
@@ -416,24 +430,49 @@ async def broadcast_worker(user_id: int, bot_instance):
                 
                 ch_id = ch["id"]
                 try:
+                    # InputEntity ni olish
+                    try:
+                        target_entity = await client.get_input_entity(ch_id)
+                    except Exception:
+                        target_entity = ch_id
+
                     sent_ok = False
                     # 1. Agar to'g'ridan-to'g'ri Story yuborish bo'lsa
                     if prepared_story_file:
                         try:
-                            await client.send_message(ch_id, file=prepared_story_file)
+                            await client.send_message(target_entity, file=prepared_story_file)
                             sent_ok = True
                         except Exception as ex_story:
                             logger.warning(f"InputMediaStory yuborishda xatolik ({ch_id}): {ex_story}")
                             
                     if not sent_ok:
-                        # 2. Agar Saved Messages'dan forward qilish bo'lsa
-                        if fwd_msg_id:
-                            await client.forward_messages(ch_id, fwd_msg_id, 'me')
+                        # 2. Agar Saqlangan Post bo'lsa (Saved Messages):
+                        # Avval xabarni to'g'ridan-to'g'ri nusxa (original) qilib yuboramiz (anti-spam botlar taqiqlamasligi uchun)
+                        if saved_msg:
+                            try:
+                                await client.send_message(
+                                    target_entity,
+                                    message=saved_msg.message,
+                                    file=saved_msg.media,
+                                    formatting_entities=saved_msg.entities
+                                )
+                                sent_ok = True
+                            except Exception as direct_err:
+                                # Agar to'g'ridan-to'g'ri bo'lmasa, odatiy forward qilib ko'ramiz
+                                try:
+                                    await client.forward_messages(target_entity, fwd_msg_id, 'me')
+                                    sent_ok = True
+                                except Exception as fwd_err:
+                                    logger.warning(f"Yuborishda xatolik ({ch.get('title', ch_id)}): {direct_err} | {fwd_err}")
                         # 3. Oddiy matn
                         elif msg_text:
-                            await client.send_message(ch_id, msg_text)
+                            await client.send_message(target_entity, msg_text)
+                            sent_ok = True
                         
-                    success_count += 1
+                    if sent_ok:
+                        success_count += 1
+                    else:
+                        fail_count += 1
                 except FloodWaitError as e:
                     logger.warning(f"FloodWait: {e.seconds} soniya kutilmoqda...")
                     await asyncio.sleep(e.seconds)
@@ -450,6 +489,18 @@ async def broadcast_worker(user_id: int, bot_instance):
             import time
             db.update_user_fields(user_id, last_sent_time=time.time(), total_sent_count=total)
             
+            # Foydalanuvchiga natija bo'yicha hisobot berish
+            try:
+                await bot_instance.send_message(
+                    user_id,
+                    f"📊 <b>Tarqatish davri yakunlandi:</b>\n\n"
+                    f"✅ <b>Muvaffaqiyatli yuborildi:</b> {success_count} ta\n"
+                    f"⚠️ <b>Yuborilmadi (yozish yopiq/cheklangan):</b> {fail_count} ta\n\n"
+                    f"⏳ <b>Keyingi davr:</b> {user.get('interval_minutes', 2)} daqiqadan so'ng avtomatik boshlanadi."
+                )
+            except Exception:
+                pass
+
             interval_sec = max(1, user.get("interval_minutes", 2)) * 60
             await asyncio.sleep(interval_sec)
             
