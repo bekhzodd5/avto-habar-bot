@@ -1,0 +1,18 @@
+services:
+  - type: web
+    name: telegram-avto-xabar-bot
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: python bot.py
+    plan: free
+    envVars:
+      - key: BOT_TOKEN
+        value: 8287911559:AAFNSQIlHGi35lgoCPAoS1UpUTXYnISFbMo
+      - key: ADMIN_ID
+        value: "7414653407"
+      - key: API_ID
+        value: "2040"
+      - key: API_HASH
+        value: "b18441a1ff607e10a989891a5462e627"
+      - key: PORT
+        value: "10000"

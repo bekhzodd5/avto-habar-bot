@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv/
+ENV/
+
+# Database & Sessions (Maxfiy ma'lumotlar)
+bot_database.sqlite3
+*.sqlite3
+*.db
+sessions/
+*.session
+*.session-journal
+temp/
+
+# Muhit o'zgaruvchilari
+.env
+.env.local
+
+# Muharrir sozlamalari
+.vscode/
+.idea/
