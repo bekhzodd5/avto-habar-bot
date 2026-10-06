@@ -43,7 +43,7 @@ from aiogram import Bot, Dispatcher, F
 from aiogram.types import (
     Message, CallbackQuery, BufferedInputFile
 )
-from aiogram.filters import CommandStart, Command
+from aiogram.filters import CommandStart, Command, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
@@ -212,6 +212,7 @@ async def cb_login_phone(call: CallbackQuery, state: FSMContext):
     await call.answer()
 
 @dp.message(AuthStates.waiting_phone)
+@dp.message(StateFilter(None), F.text.regexp(r'^\+?[0-9\s]{9,16}$'))
 async def process_phone_input(message: Message, state: FSMContext):
     phone = message.text.strip().replace(" ", "")
     if not (phone.startswith("+") and len(phone) >= 10):
@@ -795,6 +796,15 @@ async def cb_account_logout(call: CallbackQuery):
 @dp.callback_query(F.data == "noop")
 async def cb_noop(call: CallbackQuery):
     await call.answer()
+
+@dp.message(StateFilter(None))
+async def handle_fallback_message(message: Message):
+    user_id = message.from_user.id
+    text, markup = await get_main_menu_text_and_kb(user_id)
+    await message.answer(
+        f"{emo('bulb')} <i>Quyidagi menyudan kerakli bo'limni tanlang:</i>\n\n" + text,
+        reply_markup=markup
+    )
 
 # --- ISHGA TUSHIRISH (HOSTING VA CRASH RECOVERY BILAN) ---
 
