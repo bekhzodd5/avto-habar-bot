@@ -420,35 +420,58 @@ async def broadcast_worker(user_id: int, bot_instance):
                     except Exception as ex:
                         logger.warning(f"Story tayyorlashda xatolik: {ex}")
             
+            # Tarqatish boshlangani haqida foydalanuvchiga xabar berish
+            try:
+                await bot_instance.send_message(
+                    user_id,
+                    f"🚀 <b>Avto-tarqatish boshlandi!</b>\n\n"
+                    f"📡 Jami navbatdagi: <b>{len(selected_channels)}</b> ta kanal/guruh\n"
+                    f"⏳ Har bir guruhga navbat bilan xabar yuborilmoqda..."
+                )
+            except Exception:
+                pass
+
             success_count = 0
             fail_count = 0
-            
+            error_details = {}
+
             for ch in selected_channels:
                 current_state = db.get_user(user_id)
                 if not current_state or not current_state["is_broadcasting"]:
                     break
                 
                 ch_id = ch["id"]
+                ch_username = ch.get("username")
+                ch_title = ch.get("title", str(ch_id))
+                
                 try:
-                    # InputEntity ni olish
-                    try:
-                        target_entity = await client.get_input_entity(ch_id)
-                    except Exception:
-                        target_entity = ch_id
+                    # Entity ni aniqlash: username bo'lsa username orqali, bo'lmasa ID orqali
+                    target_entity = None
+                    if ch_username:
+                        try:
+                            target_entity = await client.get_input_entity(ch_username)
+                        except Exception:
+                            pass
+                    if not target_entity:
+                        try:
+                            target_entity = await client.get_input_entity(ch_id)
+                        except Exception:
+                            target_entity = ch_id
 
                     sent_ok = False
+                    
                     # 1. Agar to'g'ridan-to'g'ri Story yuborish bo'lsa
                     if prepared_story_file:
                         try:
                             await client.send_message(target_entity, file=prepared_story_file)
                             sent_ok = True
                         except Exception as ex_story:
-                            logger.warning(f"InputMediaStory yuborishda xatolik ({ch_id}): {ex_story}")
+                            logger.warning(f"Story xatolik ({ch_title}): {ex_story}")
                             
                     if not sent_ok:
-                        # 2. Agar Saqlangan Post bo'lsa (Saved Messages):
-                        # Avval xabarni to'g'ridan-to'g'ri nusxa (original) qilib yuboramiz (anti-spam botlar taqiqlamasligi uchun)
+                        # 2. Saqlangan Post bo'lsa (Saved Messages)
                         if saved_msg:
+                            # A. Asl xabar nusxasi sifatida yuborish (Anti-forward filtrlardan o'tadi)
                             try:
                                 await client.send_message(
                                     target_entity,
@@ -458,30 +481,46 @@ async def broadcast_worker(user_id: int, bot_instance):
                                 )
                                 sent_ok = True
                             except Exception as direct_err:
-                                # Agar to'g'ridan-to'g'ri bo'lmasa, odatiy forward qilib ko'ramiz
+                                # B. Agar direct bo'lmasa, Forward qilib ko'rish
                                 try:
                                     await client.forward_messages(target_entity, fwd_msg_id, 'me')
                                     sent_ok = True
                                 except Exception as fwd_err:
-                                    logger.warning(f"Yuborishda xatolik ({ch.get('title', ch_id)}): {direct_err} | {fwd_err}")
-                        # 3. Oddiy matn
-                        elif msg_text:
-                            await client.send_message(target_entity, msg_text)
-                            sent_ok = True
-                        
+                                    logger.warning(f"Forward xatosi ({ch_title}): {fwd_err}")
+
+                        # C. Agar yuqoridagilar bo'lmasa, oddiy matnni yuborish
+                        if not sent_ok and msg_text:
+                            try:
+                                await client.send_message(target_entity, msg_text)
+                                sent_ok = True
+                            except Exception as txt_err:
+                                logger.warning(f"Oddiy matn xatosi ({ch_title}): {txt_err}")
+
                     if sent_ok:
                         success_count += 1
                     else:
                         fail_count += 1
+                        error_details[ch_title] = "Yozish huquqi yo'q yoki taqiqlangan"
                 except FloodWaitError as e:
                     logger.warning(f"FloodWait: {e.seconds} soniya kutilmoqda...")
+                    error_details[ch_title] = f"Telegram FloodWait ({e.seconds} soniya)"
                     await asyncio.sleep(e.seconds)
                 except Exception as e:
-                    logger.error(f"Xabar/Hikoya yuborishda xatolik ({ch.get('title', ch_id)}): {e}")
+                    err_name = type(e).__name__
+                    if "ChatWriteForbidden" in err_name:
+                        reason = "Guruh/Kanalda yozish yopiq (admin emas)"
+                    elif "UserBannedInChannel" in err_name:
+                        reason = "Guruhda yozish taqiqlangan (SpamBlock/Mute)"
+                    elif "ChannelPrivate" in err_name:
+                        reason = "Yopiq kanal/guruh"
+                    else:
+                        reason = err_name
+                    error_details[ch_title] = reason
+                    logger.error(f"Xabar yuborishda xatolik ({ch_title}): {e}")
                     fail_count += 1
                 
-                # Cheklovlardan himoyalanish uchun 2.5 soniya kutish
-                await asyncio.sleep(2.5)
+                # Cheklovlardan himoyalanish uchun 2 soniya kutish
+                await asyncio.sleep(2.0)
             
             await client.disconnect()
             
@@ -489,15 +528,24 @@ async def broadcast_worker(user_id: int, bot_instance):
             import time
             db.update_user_fields(user_id, last_sent_time=time.time(), total_sent_count=total)
             
-            # Foydalanuvchiga natija bo'yicha hisobot berish
+            # Foydalanuvchiga batafsil hisobot yuborish
             try:
-                await bot_instance.send_message(
-                    user_id,
+                report = (
                     f"📊 <b>Tarqatish davri yakunlandi:</b>\n\n"
-                    f"✅ <b>Muvaffaqiyatli yuborildi:</b> {success_count} ta\n"
-                    f"⚠️ <b>Yuborilmadi (yozish yopiq/cheklangan):</b> {fail_count} ta\n\n"
-                    f"⏳ <b>Keyingi davr:</b> {user.get('interval_minutes', 2)} daqiqadan so'ng avtomatik boshlanadi."
+                    f"✅ <b>Muvaffaqiyatli yuborildi:</b> <b>{success_count}</b> ta\n"
+                    f"⚠️ <b>Yuborilmadi (huquq yo'q/yopiq):</b> <b>{fail_count}</b> ta\n"
                 )
+                if error_details and fail_count > 0:
+                    report += "\n<b>Asosiy sabablar:</b>\n"
+                    # Sabablar bo'yicha guruhlash
+                    reasons_summary = {}
+                    for t, r in error_details.items():
+                        reasons_summary[r] = reasons_summary.get(r, 0) + 1
+                    for r_text, r_cnt in list(reasons_summary.items())[:5]:
+                        report += f"• {r_text}: <b>{r_cnt}</b> ta\n"
+
+                report += f"\n⏳ <b>Keyingi davr:</b> {user.get('interval_minutes', 2)} daqiqadan so'ng avtomatik boshlanadi."
+                await bot_instance.send_message(user_id, report)
             except Exception:
                 pass
 
